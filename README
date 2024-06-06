@@ -1,0 +1,97 @@
+Algorithm:
+1) Specify which channels are which
+
+2) For each channel select the region of highest background signal = RIOH
+
+3) remove (subtraction value) = (mean of RIOH)  + 3(standard deviation RIOH) from each channel
+
+4) The final step in background correction involves manual cropping of each islet-of-interest and associated immune cells
+
+5) all channels are first converted to 8-bit images and units of length are converted to pixels.
+
+6) 8-bit insulin, glucagon, CD4 and CD8 channels are then converted to thresholded masks within a predetermined range (default = 10–255 for all channels).
+
+7) All background regions entirely surrounded by foreground (“background enclaves”) in the insulin/glucagon sum image are converted to foreground to account for lack of nuclear staining in images obtained from staining with antibodies specific for molecules confined to the cell surface or cytoplasm (e.g. insulin and glucagon).
+
+8) The convex hull of the insulin/glucagon sum image is calculated and all background within the convex hull is converted to foreground, establishing a thresholded region that matches the islet area.
+
+NOTE: CD4 and CD8 insulitis and peri-insulitis calculations are derived by comparing their signals to the islet area image.
+
+9) Thresholded CD4 and CD8 images are multiplied by the thresholded islet area image to isolate only the signals occupying the islet area.
+
+10) The total area of CD4+ and CD8+ T cells associated with each islet is also calculated, pro- viding a reference for peri-insulitis calculations.
+
+11) The thresholded CD4 and CD8 images are then added together and the area calculations are repeated with the resultant image to provide an approximation of combined CD4+ and CD8+ T cell inflammation. 
+
+12) β cell mass can be calculated from the insulin signal by converting all background enclaves to foreground to account for lack of nuclear staining.
+
+13) To facilitate expeditious visual inspection of insulitis, peri-insulitis and islet area calculations, two valida- tion images are generated for each analyzed islet and adjacently displayed as two linked image stacks. The first image stack depicts a transparent overlay of the islet area derived from the insulin and glucagon signals with the original false-color merged image for each islet. The second image stack depicts this same islet area overlay on a black background accompanied by the thresholded CD4 and CD8 signals. By generating these two adja- cent image stacks, the user determines which islets (if any) must be reanalyzed due to inadequate user-defined background correction.
+
+
+def subtract_background(image, sd_multiplier):
+    # Assuming a fixed ROI or an automatic background detection here due to headless mode
+    stats = ij.op().run('stats.default', image)
+    background_value = stats.mean + (sd_multiplier * stats.stdDev)
+    corrected_image = ij.op().run('math.subtract', image, background_value)
+    return corrected_image
+
+
+# Function to set threshold and convert to mask
+def threshold_to_mask(image, lower_threshold, upper_threshold):
+    thresholded_image = ij.op().run('threshold.apply', image, lower_threshold, upper_threshold)
+    mask = ij.op().run('convert.bit', thresholded_image)
+    return mask
+
+
+# Function to perform the convex hull and other required operations
+def process_islet_image(image_files):
+    lower_thresholds = [10, 10, 10, 10]
+    upper_thresholds = [255, 255, 255, 255]
+    sd_multipliers = [3, 3, 3, 3]
+
+    # Open each channel image
+    overlay_image = ij.io().open(image_files['overlay'])
+    cd8_image = ij.io().open(image_files['ch00'])
+    insulin_image = ij.io().open(image_files['ch01'])
+    cd4_image = ij.io().open(image_files['ch02'])
+    glucagon_image = ij.io().open(image_files['ch03'])
+
+    # Background correction for each channel
+    cd8_image = subtract_background(cd8_image, sd_multipliers[0])
+    insulin_image = subtract_background(insulin_image, sd_multipliers[1])
+    cd4_image = subtract_background(cd4_image, sd_multipliers[2])
+    glucagon_image = subtract_background(glucagon_image, sd_multipliers[3])
+
+    # Thresholding insulin and glucagon channels and combining them
+    insulin_mask = threshold_to_mask(insulin_image, lower_thresholds[1], upper_thresholds[1])
+    glucagon_mask = threshold_to_mask(glucagon_image, lower_thresholds[3], upper_thresholds[3])
+    combined_mask = ij.op().run('create.binary', insulin_mask)
+    combined_mask = ij.op().run('math.add', combined_mask, glucagon_mask)
+
+    # Clean up the combined mask
+    combined_mask = ij.op().run('morphology.removeSmallObjects', combined_mask, 5)
+    combined_mask = ij.op().run('morphology.fillHoles', combined_mask)
+
+    # Apply convex hull
+    convex_hull = ij.op().run('geom.convexHull', combined_mask)
+
+    # Threshold CD4 and CD8 channels
+    cd4_mask = threshold_to_mask(cd4_image, lower_thresholds[2], upper_thresholds[2])
+    cd8_mask = threshold_to_mask(cd8_image, lower_thresholds[0], upper_thresholds[0])
+
+    # Combine CD4 and CD8 masks with the convex hull mask
+    cd4_infiltrate = ij.op().run('math.multiply', cd4_mask, convex_hull)
+    cd8_infiltrate = ij.op().run('math.multiply', cd8_mask, convex_hull)
+
+    # Quantify areas
+    results = {
+        "Islet Area": ij.op().run('stats.region', convex_hull).area,
+        "Insulin Area": ij.op().run('stats.region', insulin_mask).area,
+        "CD4 Area": ij.op().run('stats.region', cd4_mask).area,
+        "CD8 Area": ij.op().run('stats.region', cd8_mask).area,
+        "CD4 Infiltrate": ij.op().run('stats.region', cd4_infiltrate).area,
+        "CD8 Infiltrate": ij.op().run('stats.region', cd8_infiltrate).area,
+    }
+
+    return results
+d
